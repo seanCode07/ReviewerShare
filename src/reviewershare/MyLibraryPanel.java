@@ -3,6 +3,7 @@ package reviewershare;
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.io.File;
 import java.util.ArrayList;
 
 /** My Library: materials I shared (with their moderation status), and materials I requested. */
@@ -48,7 +49,7 @@ public class MyLibraryPanel extends JPanel {
         });
         delete.addActionListener(e -> {
             Material m = selected();
-            if (m != null && JOptionPane.showConfirmDialog(this, "Delete \"" + m.title + "\"? This cannot be undone.",
+            if (m != null && Ui.showConfirm(this, "Delete \"" + m.title + "\"? This cannot be undone.",
                     "Confirm delete", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) == JOptionPane.YES_OPTION) {
                 DataStore.deleteMaterial(m.id);
                 main.refreshAll();
@@ -98,7 +99,7 @@ public class MyLibraryPanel extends JPanel {
     /** Returns the selected material in the Shared table, or shows a message if none. */
     private Material selected() {
         Material m = selectedQuiet();
-        if (m == null) JOptionPane.showMessageDialog(this, "Please select a material first.");
+        if (m == null) Ui.showMessage(this, "Please select a material first.");
         return m;
     }
 
@@ -122,12 +123,12 @@ public class MyLibraryPanel extends JPanel {
     private void viewRequestedFile() {
         int row = requestedTable.getSelectedRow();
         if (row < 0 || row >= sentList.size()) {
-            JOptionPane.showMessageDialog(this, "Please select a request first.");
+            Ui.showMessage(this, "Please select a request first.");
             return;
         }
         Request r = sentList.get(row);
         if (!r.status.equals("Approved") && !r.status.equals("Completed")) {
-            JOptionPane.showMessageDialog(this, "You can view the file once the owner approves your request.");
+            Ui.showMessage(this, "You can view the file once the owner approves your request.");
             return;
         }
         Ui.openMaterialFile(this, DataStore.findMaterial(r.materialId));
@@ -136,36 +137,93 @@ public class MyLibraryPanel extends JPanel {
     private void cancelSelectedRequest() {
         int row = requestedTable.getSelectedRow();
         if (row < 0 || row >= sentList.size()) {
-            JOptionPane.showMessageDialog(this, "Please select a request first.");
+            Ui.showMessage(this, "Please select a request first.");
             return;
         }
         Request r = sentList.get(row);
         if (!r.status.equals("Pending")) {
-            JOptionPane.showMessageDialog(this, "Only requests with status \"Pending\" can be cancelled.");
+            Ui.showMessage(this, "Only requests with status \"Pending\" can be cancelled.");
             return;
         }
-        if (JOptionPane.showConfirmDialog(this, "Cancel your request for \"" + r.materialTitle + "\"?", "Cancel request",
+        if (Ui.showConfirm(this, "Cancel your request for \"" + r.materialTitle + "\"?", "Cancel request",
                 JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
         if (DataStore.cancelRequest(r)) {
-            JOptionPane.showMessageDialog(this, "Your request was cancelled.");
+            Ui.showMessage(this, "Your request was cancelled.");
         } else {
-            JOptionPane.showMessageDialog(this, "This request can no longer be cancelled - the owner already responded.");
+            Ui.showMessage(this, "This request can no longer be cancelled - the owner already responded.");
         }
         main.refreshAll();
     }
 
-    /** A dialog for editing title, subject, type, and description. Edits to a live or rejected material go back to the admin. */
+    /** A dialog for editing title, subject, type, description and the attached files. Edits to a live or rejected material go back to the admin. */
     private void showEditDialog(Material m) {
         JDialog d = new JDialog(SwingUtilities.getWindowAncestor(this), "Edit Material", Dialog.ModalityType.APPLICATION_MODAL);
         JTextField title = Ui.field();
         title.setText(m.title);
-        JComboBox<String> subject = Ui.style(new JComboBox<>(DataStore.SUBJECTS));
+        ArrayList<String> subjectNames = new ArrayList<>(java.util.Arrays.asList(DataStore.subjectArray()));
+        if (!subjectNames.contains(m.subject)) subjectNames.add(m.subject);
+        JComboBox<String> subject = Ui.style(new JComboBox<>(subjectNames.toArray(new String[0])));
         JComboBox<String> type = Ui.style(new JComboBox<>(DataStore.TYPES));
         JTextArea desc = Ui.textArea(4);
         desc.setText(m.description);
         subject.setSelectedItem(m.subject);
         type.setSelectedItem(m.type);
         boolean needsReview = !Material.PENDING.equals(m.status);
+
+        // Files: the ones already attached (can be removed) and new ones (can be added)
+        ArrayList<Material.FileInfo> kept = new ArrayList<>(m.files);
+        ArrayList<File> added = new ArrayList<>();
+        DefaultListModel<String> fileModel = new DefaultListModel<>();
+        JList<String> fileList = new JList<>(fileModel);
+        fileList.setBackground(Ui.FIELD);
+        fileList.setForeground(Ui.TEXT);
+        fileList.setFont(Ui.BODY);
+        fileList.setFixedCellHeight(26);
+        fileList.setSelectionBackground(new Color(0x2F3590));
+        fileList.setSelectionForeground(Color.WHITE);
+        Runnable reload = () -> {
+            fileModel.clear();
+            for (Material.FileInfo f : kept) fileModel.addElement("  " + f.name + "   (" + f.size + ")");
+            for (File f : added) fileModel.addElement("  " + f.getName() + "   (" + Ui.formatSize(f.length()) + ")  - new");
+        };
+        reload.run();
+        JScrollPane fileScroll = Ui.scrollBox(fileList);
+        fileScroll.setPreferredSize(new Dimension(300, 118));
+
+        JButton addBtn = Ui.plainButton("Add Files...");
+        JButton delBtn = Ui.plainButton("Remove Selected");
+        addBtn.addActionListener(e -> {
+            JFileChooser fc = new JFileChooser();
+            fc.setMultiSelectionEnabled(true);
+            fc.setAcceptAllFileFilterUsed(false);
+            fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Documents (PDF, Word, PowerPoint)", DataStore.ALLOWED_EXT));
+            if (fc.showOpenDialog(d) != JFileChooser.APPROVE_OPTION) return;
+            StringBuilder problems = new StringBuilder();
+            for (File f : fc.getSelectedFiles()) {
+                if (added.contains(f)) continue;
+                if (kept.size() + added.size() >= DataStore.MAX_FILES) {
+                    problems.append("A material can have up to ").append(DataStore.MAX_FILES).append(" files.\n");
+                    break;
+                }
+                String err = DataStore.checkFile(f);
+                if (err != null) problems.append(err).append("\n");
+                else added.add(f);
+            }
+            reload.run();
+            if (problems.length() > 0) Ui.showMessage(d, problems.toString().trim(), "Some files were not added", JOptionPane.WARNING_MESSAGE);
+        });
+        delBtn.addActionListener(e -> {
+            int[] sel = fileList.getSelectedIndices();
+            for (int k = sel.length - 1; k >= 0; k--) {
+                int idx = sel[k];
+                if (idx < kept.size()) kept.remove(idx);
+                else added.remove(idx - kept.size());
+            }
+            reload.run();
+        });
+        JPanel fileButtons = Ui.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0)));
+        fileButtons.add(addBtn);
+        fileButtons.add(delBtn);
 
         JPanel form = Ui.clear(new JPanel());
         form.setLayout(new BoxLayout(form, BoxLayout.Y_AXIS));
@@ -174,8 +232,16 @@ public class MyLibraryPanel extends JPanel {
         addRow(form, "Subject", subject);
         addRow(form, "Type", type);
         addRow(form, "Description", Ui.scrollBox(desc));
+        addRow(form, "Attached Files (add, remove or replace)", fileScroll);
+        fileButtons.setAlignmentX(Component.LEFT_ALIGNMENT);
+        form.add(fileButtons);
+        form.add(Box.createVerticalStrut(8));
+        JLabel hint = Ui.label("<html><body style='width:400px'>Students who already have access to your files are notified when you add or remove files.</body></html>", Ui.SMALL, Ui.MUTED);
+        hint.setAlignmentX(Component.LEFT_ALIGNMENT);
+        form.add(hint);
         if (needsReview) {
-            JLabel note = Ui.label("<html><body style='width:380px'>Note: after you save, an admin will check this reviewer again before it is shown in the library.</body></html>", Ui.SMALL, Ui.WARN);
+            form.add(Box.createVerticalStrut(6));
+            JLabel note = Ui.label("<html><body style='width:400px'>Note: after you save, an admin will check this reviewer again before it is shown in the library.</body></html>", Ui.SMALL, Ui.WARN);
             note.setAlignmentX(Component.LEFT_ALIGNMENT);
             form.add(note);
         }
@@ -184,15 +250,26 @@ public class MyLibraryPanel extends JPanel {
         JButton cancel = Ui.plainButton("Cancel");
         save.addActionListener(e -> {
             if (title.getText().trim().isEmpty() || desc.getText().trim().isEmpty()) {
-                JOptionPane.showMessageDialog(d, "Title and description cannot be empty.", "Missing information", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Title and description cannot be empty.", "Missing information", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+            if (kept.isEmpty() && added.isEmpty()) {
+                int ok = Ui.showConfirm(d, "This material will have no files. Students will not be able to view anything.\nSave anyway?",
+                        "No files attached", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (ok != JOptionPane.YES_OPTION) return;
+            }
+            java.util.HashSet<Integer> keepIds = new java.util.HashSet<>();
+            for (Material.FileInfo f : kept) keepIds.add(f.id);
+            java.util.HashSet<Integer> removeIds = new java.util.HashSet<>();
+            for (Material.FileInfo f : m.files) if (!keepIds.contains(f.id)) removeIds.add(f.id);
             m.title = title.getText().trim();
             m.subject = (String) subject.getSelectedItem();
             m.type = (String) type.getSelectedItem();
             m.description = desc.getText().trim();
-            DataStore.updateMaterial(m, needsReview);
+            DataStore.updateMaterial(m, needsReview, added, removeIds);
             d.dispose();
+            Ui.showMessage(this, needsReview ? "Your changes were saved and sent to the admin for review."
+                    : "Your changes were saved.", "Saved", Ui.SUCCESS_MESSAGE);
             main.refreshAll();
         });
         cancel.addActionListener(e -> d.dispose());
@@ -200,9 +277,9 @@ public class MyLibraryPanel extends JPanel {
         btns.add(cancel);
         btns.add(save);
 
-        d.add(form, BorderLayout.CENTER);
+        d.add(Ui.scroll(form), BorderLayout.CENTER);
         d.add(btns, BorderLayout.SOUTH);
-        d.setSize(500, needsReview ? 520 : 480);
+        d.setSize(560, needsReview ? 700 : 660);
         d.setLocationRelativeTo(this);
         d.getContentPane().setBackground(Ui.themeCard());
         if (Ui.light) Ui.applyTheme(d.getContentPane(), true);

@@ -2,6 +2,11 @@ package reviewershare;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.util.HashSet;
 import java.util.Random;
 
 /** Sign-in screen, plus Terms & Privacy, Create Account, and Forgot Password dialogs. */
@@ -51,6 +56,15 @@ public class LoginFrame extends JFrame {
     private Ui.RoundButton signInStudent, signInAdmin;
     private Banner banner;
 
+    // Notice shown to someone whose admin request was answered
+    private final Ui.RoundPanel notice = Ui.pastel(Ui.P_MINT);
+    private final JLabel noticeText = Ui.label(" ", Ui.BOLD, Ui.TEXT);
+    private final javax.swing.Timer noticeTimer = new javax.swing.Timer(25000, e -> notice.setVisible(false));
+    private final javax.swing.Timer adminWatch = new javax.swing.Timer(2000, e -> checkAdminRequest());
+    private final HashSet<String> announced = new HashSet<>();
+    private String watchedAdminId = "";
+    private long lastVersion = -1;
+
     public LoginFrame() {
         super("ReviewerShare - Sign In");
         setDefaultCloseOperation(EXIT_ON_CLOSE);
@@ -66,6 +80,50 @@ public class LoginFrame extends JFrame {
         add(banner);
         add(buildRightPanel());
         setRole(false);
+
+        // Every 2 seconds, see if a current admin answered the admin request typed on this screen
+        noticeTimer.setRepeats(false);
+        adminWatch.start();
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosed(WindowEvent e) {
+                adminWatch.stop();
+                noticeTimer.stop();
+            }
+        });
+    }
+
+    /** Tells the person on the sign-in screen when their admin request is approved (or rejected). */
+    private void checkAdminRequest() {
+        try {
+            long v = Db.version();
+            if (v == lastVersion) return;
+            lastVersion = v;
+            for (String id : new String[]{watchedAdminId, aId.getText().trim()}) {
+                if (id.isEmpty()) continue;
+                DataStore.AdminRequest r = DataStore.adminRequestFor(id);
+                if (r == null) continue;
+                boolean approved = DataStore.ADMIN_APPROVED.equals(r.status);
+                boolean rejected = DataStore.ADMIN_REJECTED.equals(r.status);
+                if ((approved || rejected) && announced.add(r.id + ":" + r.status)) {
+                    showNotice(approved
+                            ? "Good news, " + r.name + "! An admin approved your request. Click \"Register (approved)\" on the Administrator tab."
+                            : "Your admin request was not approved. You can send a new request.", approved);
+                }
+            }
+        } catch (RuntimeException ex) {
+            // the data files may be busy for a moment - try again on the next tick
+        }
+    }
+
+    private void showNotice(String message, boolean good) {
+        noticeText.setText("<html><body style='width:330px'>" + message + "</body></html>");
+        notice.setBackground(good ? Ui.P_MINT : Ui.P_PEACH);
+        notice.setVisible(true);
+        notice.setMaximumSize(new Dimension(Integer.MAX_VALUE, notice.getPreferredSize().height));
+        notice.revalidate();
+        notice.repaint();
+        noticeTimer.restart();
+        Toolkit.getDefaultToolkit().beep();
     }
 
     private JComponent left(JComponent c) {
@@ -177,6 +235,18 @@ public class LoginFrame extends JFrame {
         formHolder.setAlignmentX(Component.LEFT_ALIGNMENT);
         formHolder.setMaximumSize(new Dimension(Integer.MAX_VALUE, formHolder.getPreferredSize().height));
 
+        notice.setLayout(new BorderLayout());
+        notice.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
+        notice.add(noticeText, BorderLayout.CENTER);
+        notice.setVisible(false);
+        notice.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        notice.setToolTipText("Click to dismiss");
+        notice.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent e) { notice.setVisible(false); }
+        });
+        notice.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        p.add(notice);
         p.add(Box.createVerticalGlue());
         p.add(left(Ui.label("I am signing in as", Ui.SMALL, Ui.MUTED)));
         p.add(Box.createVerticalStrut(6));
@@ -299,26 +369,42 @@ public class LoginFrame extends JFrame {
             showError(error, admin ? "Please enter your Admin ID and password." : "Please enter your Student ID and password.");
             return;
         }
+        int locked = DataStore.lockSecondsLeft(id);
+        if (locked > 0) {
+            showError(error, "Too many wrong passwords. This ID is locked for " + (locked / 60) + ":" + String.format("%02d", locked % 60)
+                    + " more minutes. Try again later.");
+            return;
+        }
         Student s = DataStore.login(id, pw);
         if (s == null) {
+            int left = DataStore.recordFailedLogin(id);
             DataStore.AdminRequest r = admin ? DataStore.adminRequestFor(id) : null;
-            if (r != null && DataStore.ADMIN_PENDING.equals(r.status)) {
+            if (left == 0) {
+                showError(error, "Too many wrong passwords. This ID is now locked for " + DataStore.LOCK_MINUTES + " minutes.");
+            } else if (r != null && DataStore.ADMIN_PENDING.equals(r.status)) {
                 showError(error, "Your admin request is still waiting for approval by a current admin.");
             } else if (r != null && DataStore.ADMIN_APPROVED.equals(r.status)) {
                 showError(error, "Your request was approved. Click \"Register (approved)\" to create your account.");
             } else if (r != null && DataStore.ADMIN_REJECTED.equals(r.status)) {
                 showError(error, "Your admin request was rejected. You may send a new request.");
             } else {
-                showError(error, admin ? "Wrong Admin ID or password." : "Wrong Student ID or password.");
+                showError(error, (admin ? "Wrong Admin ID or password. " : "Wrong Student ID or password. ")
+                        + left + (left == 1 ? " try left." : " tries left."));
             }
             return;
         }
+        DataStore.clearFailedLogins(id);
         if (admin && !s.isAdmin()) {
             showError(error, "That is a student account. Please use the Student tab to sign in.");
             return;
         }
         if (!admin && s.isAdmin()) {
             showError(error, "That is an administrator account. Please use the Administrator tab to sign in.");
+            return;
+        }
+        if (DataStore.isSuspended(s.id)) {
+            String why = DataStore.suspensionReason(s.id);
+            showError(error, "This account is suspended." + (why.isEmpty() ? "" : " Reason: " + why) + " Please contact an administrator.");
             return;
         }
         DataStore.currentUser = s;
@@ -410,16 +496,20 @@ public class LoginFrame extends JFrame {
 
     // ---------- Create student account ----------
     private void showRegisterDialog() {
-        JDialog d = dialog("Create a student account", 460, 600);
-        JTextField id = Ui.field(), name = Ui.field(), email = Ui.field(), course = Ui.field();
+        JDialog d = dialog("Create a student account", 480, 660);
+        JTextField id = Ui.field(), name = Ui.field(), email = Ui.field();
+        JComboBox<String> course = Ui.style(new JComboBox<>(DataStore.programArray()));
         JPasswordField pw = Ui.passwordField(), pw2 = Ui.passwordField();
         Ui.limitInput(id, 12, true);   // digits only, up to 12
 
         JPanel form = formPanel();
+        if (DataStore.rosterSize() > 0)
+            form.add(left(Ui.label("<html><body style='width:380px'>Your Student ID and full name must match the school records.</body></html>", Ui.SMALL, Ui.MUTED)));
+        form.add(Box.createVerticalStrut(8));
         addRow(form, "Student ID (digits only, up to 12)", id);
-        addRow(form, "Full Name", name);
-        addRow(form, "Email", email);
-        addRow(form, "Course", course);
+        addRow(form, "Full Name (as in the school records)", name);
+        addRow(form, "Email (we send a verification code)", email);
+        addRow(form, "Course / Program", course);
         addRow(form, "Password (min 6 characters)", pw);
         addRow(form, "Confirm Password", pw2);
 
@@ -429,44 +519,65 @@ public class LoginFrame extends JFrame {
         create.addActionListener(e -> {
             String password = new String(pw.getPassword());
             String confirm = new String(pw2.getPassword());
-            String sid = id.getText().trim();
-            if (sid.isEmpty() || name.getText().trim().isEmpty() || email.getText().trim().isEmpty()
-                    || course.getText().trim().isEmpty() || password.isEmpty() || confirm.isEmpty()) {
-                JOptionPane.showMessageDialog(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
+            String sid = id.getText().trim(), nm = name.getText().trim(), mail = email.getText().trim();
+            if (sid.isEmpty() || nm.isEmpty() || mail.isEmpty() || password.isEmpty() || confirm.isEmpty()) {
+                Ui.showMessage(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
             } else if (!sid.matches("\\d{1,12}")) {
-                JOptionPane.showMessageDialog(d, "Student ID must be numbers only, up to 12 digits.", "Invalid Student ID", JOptionPane.ERROR_MESSAGE);
-            } else if (!Ui.isValidEmail(email.getText().trim())) {
-                JOptionPane.showMessageDialog(d, "Please enter a valid email address.", "Invalid email", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Student ID must be numbers only, up to 12 digits.", "Invalid Student ID", JOptionPane.ERROR_MESSAGE);
+            } else if (!Ui.isValidEmail(mail)) {
+                Ui.showMessage(d, "Please enter a valid email address.", "Invalid email", JOptionPane.ERROR_MESSAGE);
             } else if (password.length() < 6) {
-                JOptionPane.showMessageDialog(d, "Password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
             } else if (!password.equals(confirm)) {
-                JOptionPane.showMessageDialog(d, "The two passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
-            } else if (!DataStore.register(new Student(sid, name.getText().trim(), email.getText().trim(),
-                    course.getText().trim(), "N/A", "student"), password)) {
-                JOptionPane.showMessageDialog(d, "That Student ID is already registered.", "Duplicate ID", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "The two passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
             } else {
-                JOptionPane.showMessageDialog(d, "Account created! You can now sign in.");
+                String problem = DataStore.checkRegistration(sid, nm, mail);   // school records + duplicate ID or email
+                if (problem != null) {
+                    Ui.showMessage(d, problem, "Cannot create account", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+                if (!verifyEmail(d, mail)) return;
+                String result = DataStore.registerStudent(new Student(sid, nm, mail, (String) course.getSelectedItem(), "N/A", "student"), password);
+                if (result != null) {
+                    Ui.showMessage(d, result, "Cannot create account", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+                Ui.showMessage(d, "Account created! You can now sign in.", "Welcome to ReviewerShare", Ui.SUCCESS_MESSAGE);
                 sId.setText(sid);
                 sPw.setText("");
                 d.dispose();
             }
         });
 
-        d.add(form, BorderLayout.CENTER);
+        d.add(Ui.scroll(form), BorderLayout.CENTER);
         d.add(buttonRow(cancel, create), BorderLayout.SOUTH);
         d.setVisible(true);
     }
 
+    /** Sends (shows) a 6-digit code and asks for it. Three tries. Demo mode: a real system would email the code. */
+    private boolean verifyEmail(Component parent, String email) {
+        String code = String.format("%06d", new Random().nextInt(1_000_000));
+        showCodeDialog(parent, code);
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            String typed = Ui.showInput(parent, "Type the 6-digit code that was sent to " + email + ":", "Verify your email", JOptionPane.QUESTION_MESSAGE);
+            if (typed == null) return false;
+            if (typed.trim().equals(code)) return true;
+            Ui.showMessage(parent, attempt < 3 ? "That code is not correct. Please try again (" + (3 - attempt) + " left)."
+                    : "That code is not correct. Please start again.", "Wrong code", JOptionPane.ERROR_MESSAGE);
+        }
+        return false;
+    }
+
     // ---------- Admin sign-up, step 1: ask a current admin ----------
     private void showAdminRequestDialog() {
-        JDialog d = dialog("Request admin access", 480, 540);
+        JDialog d = dialog("Request admin access", 520, 560);
         JTextField id = Ui.field(), name = Ui.field(), email = Ui.field();
         Ui.limitInput(id, 12, false);
 
         JPanel form = formPanel();
         form.add(left(Ui.label("Ask a current admin for approval", Ui.H2, Ui.TEXT)));
         form.add(Box.createVerticalStrut(4));
-        form.add(left(Ui.label("<html><body style='width:380px'>Every current administrator is notified. After one of them approves you, come back and click \"Register (approved)\" to create your admin account.</body></html>", Ui.SMALL, Ui.MUTED)));
+        form.add(left(Ui.label("<html><body style='width:350px'>Every current administrator is notified. After one of them approves you, come back and click \"Register (approved)\" to create your admin account.</body></html>", Ui.SMALL, Ui.MUTED)));
         form.add(Box.createVerticalStrut(16));
         addRow(form, "Admin ID you want (3-12 letters, numbers or _)", id);
         addRow(form, "Full Name", name);
@@ -478,18 +589,19 @@ public class LoginFrame extends JFrame {
         send.addActionListener(e -> {
             String aid = id.getText().trim(), nm = name.getText().trim(), mail = email.getText().trim();
             if (aid.isEmpty() || nm.isEmpty() || mail.isEmpty()) {
-                JOptionPane.showMessageDialog(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
             } else if (!aid.matches("(?=.*[A-Za-z])[A-Za-z0-9_]{3,12}")) {
-                JOptionPane.showMessageDialog(d, "The Admin ID must be 3 to 12 letters, numbers or underscores, with at least one letter.", "Invalid Admin ID", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "The Admin ID must be 3 to 12 letters, numbers or underscores, with at least one letter.", "Invalid Admin ID", JOptionPane.ERROR_MESSAGE);
             } else if (!Ui.isValidEmail(mail)) {
-                JOptionPane.showMessageDialog(d, "Please enter a valid email address.", "Invalid email", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Please enter a valid email address.", "Invalid email", JOptionPane.ERROR_MESSAGE);
             } else {
                 String problem = DataStore.requestAdminAccess(aid, nm, mail);
                 if (problem != null) {
-                    JOptionPane.showMessageDialog(d, problem, "Could not send request", JOptionPane.ERROR_MESSAGE);
+                    Ui.showMessage(d, problem, "Could not send request", JOptionPane.ERROR_MESSAGE);
                 } else {
-                    JOptionPane.showMessageDialog(d, "Your request was sent to the current admins.\nYou can register as soon as one of them approves it.");
+                    Ui.showMessage(d, "Your request was sent to the current admins.\nYou can register as soon as one of them approves it.");
                     aId.setText(aid);
+                    watchedAdminId = aid;
                     d.dispose();
                 }
             }
@@ -502,7 +614,7 @@ public class LoginFrame extends JFrame {
 
     // ---------- Admin sign-up, step 2: register after approval ----------
     private void showAdminRegisterDialog() {
-        JDialog d = dialog("Register as administrator", 480, 560);
+        JDialog d = dialog("Register as administrator", 520, 580);
         JTextField id = Ui.field(), email = Ui.field();
         JPasswordField pw = Ui.passwordField(), pw2 = Ui.passwordField();
         Ui.limitInput(id, 12, false);
@@ -511,7 +623,7 @@ public class LoginFrame extends JFrame {
         JPanel form = formPanel();
         form.add(left(Ui.label("Create your admin account", Ui.H2, Ui.TEXT)));
         form.add(Box.createVerticalStrut(4));
-        form.add(left(Ui.label("<html><body style='width:380px'>Use the same Admin ID and email you sent in your request. This only works after a current admin approved it.</body></html>", Ui.SMALL, Ui.MUTED)));
+        form.add(left(Ui.label("<html><body style='width:350px'>Use the same Admin ID and email you sent in your request. This only works after a current admin approved it.</body></html>", Ui.SMALL, Ui.MUTED)));
         form.add(Box.createVerticalStrut(16));
         addRow(form, "Admin ID", id);
         addRow(form, "Email used in the request", email);
@@ -525,17 +637,17 @@ public class LoginFrame extends JFrame {
             String aid = id.getText().trim(), mail = email.getText().trim();
             String a = new String(pw.getPassword()), b = new String(pw2.getPassword());
             if (aid.isEmpty() || mail.isEmpty() || a.isEmpty() || b.isEmpty()) {
-                JOptionPane.showMessageDialog(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Please fill in all fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
             } else if (a.length() < 6) {
-                JOptionPane.showMessageDialog(d, "Password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "Password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
             } else if (!a.equals(b)) {
-                JOptionPane.showMessageDialog(d, "The two passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
+                Ui.showMessage(d, "The two passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
             } else {
                 String problem = DataStore.registerApprovedAdmin(aid, mail, a);
                 if (problem != null) {
-                    JOptionPane.showMessageDialog(d, problem, "Could not register", JOptionPane.ERROR_MESSAGE);
+                    Ui.showMessage(d, problem, "Could not register", JOptionPane.ERROR_MESSAGE);
                 } else {
-                    JOptionPane.showMessageDialog(d, "Admin account created! You can now sign in.");
+                    Ui.showMessage(d, "Admin account created! You can now sign in.");
                     aId.setText(aid);
                     aPw.setText("");
                     d.dispose();
@@ -566,10 +678,10 @@ public class LoginFrame extends JFrame {
         Ui.RoundPanel warn = Ui.pastel(Ui.P_PEACH);
         warn.setLayout(new BorderLayout());
         warn.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
-        warn.add(Ui.label("<html><body style='width:300px'><b>Remember this code clearly!</b><br>Memorize it or write it down before you click OK. "
+        warn.add(Ui.label("<html><body style='width:280px'><b>Remember this code clearly!</b><br>Memorize it or write it down before you click OK. "
                 + "The code disappears as soon as this message closes and will not be shown again.</body></html>", Ui.SMALL, Ui.TEXT), BorderLayout.CENTER);
         box.add(left(warn));
-        JOptionPane.showMessageDialog(parent, box, "Verification code - remember it!", JOptionPane.WARNING_MESSAGE);
+        Ui.showMessage(parent, box, "Verification code - remember it!", JOptionPane.WARNING_MESSAGE);
     }
 
     private void showForgotDialog(boolean admin) {
@@ -578,6 +690,7 @@ public class LoginFrame extends JFrame {
         JPanel stack = new JPanel(steps);
         stack.setBackground(Ui.CARD);
         String[] code = new String[1];
+        int[] tries = {0};
 
         // Step 1: who are you?
         JTextField id = Ui.field(), email = Ui.field();
@@ -634,6 +747,7 @@ public class LoginFrame extends JFrame {
             } else {
                 msg1.setText(" ");
                 code[0] = String.format("%06d", new Random().nextInt(1_000_000));
+                tries[0] = 0;
                 showCodeDialog(d, code[0]);
                 codeField.setText("");
                 msg2.setText(" ");
@@ -643,14 +757,22 @@ public class LoginFrame extends JFrame {
         reset.addActionListener(e -> {
             String a = new String(np.getPassword()), b = new String(np2.getPassword());
             if (code[0] == null || !codeField.getText().trim().equals(code[0])) {
-                msg2.setText("That verification code is not correct.");
+                tries[0]++;
+                if (tries[0] >= 5) {
+                    Ui.showMessage(d, "Too many wrong codes. Please request a new code.", "Too many tries", JOptionPane.WARNING_MESSAGE);
+                    code[0] = null;
+                    tries[0] = 0;
+                    steps.show(stack, "1");
+                    return;
+                }
+                msg2.setText("That verification code is not correct. " + (5 - tries[0]) + " tries left.");
             } else if (a.length() < 6) {
                 msg2.setText("Password must be at least 6 characters.");
             } else if (!a.equals(b)) {
                 msg2.setText("The two passwords do not match.");
             } else {
                 DataStore.resetPassword(id.getText().trim(), a);
-                JOptionPane.showMessageDialog(d, "Your password was reset. You can now sign in.");
+                Ui.showMessage(d, "Your password was reset. You can now sign in.");
                 (admin ? aId : sId).setText(id.getText().trim());
                 (admin ? aPw : sPw).setText("");
                 d.dispose();

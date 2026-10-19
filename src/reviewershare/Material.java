@@ -22,6 +22,13 @@ public class Material {
     public double rating;
     public int ratingCount, requestCount;
     public ArrayList<String> topics = new ArrayList<>();
+    public ArrayList<FileInfo> files = new ArrayList<>();
+
+    /** One attached file (a material can have several). */
+    public static class FileInfo {
+        public int id;
+        public String name, size, path;
+    }
 
     /** Splits a text on commas or new lines into a clean list of topics. */
     public static ArrayList<String> parseTopics(String text) {
@@ -42,9 +49,11 @@ public class Material {
 
     /** File format guessed from the file name. */
     public String getFormat() {
-        int dot = fileName.lastIndexOf('.');
+        String shown = files.isEmpty() ? fileName : files.get(0).name;
+        if (files.size() > 1) return files.size() + " files";
+        int dot = shown.lastIndexOf('.');
         if (dot < 0) return "-";
-        String ext = fileName.substring(dot + 1).toLowerCase();
+        String ext = shown.substring(dot + 1).toLowerCase();
         if (ext.equals("pdf")) return "PDF Document";
         if (ext.equals("docx") || ext.equals("doc")) return "Word Document";
         if (ext.equals("pptx") || ext.equals("ppt")) return "Presentation";

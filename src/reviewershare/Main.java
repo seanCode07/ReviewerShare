@@ -15,7 +15,7 @@ public class Main {
             try {
                 Db.init(); // creates the data files on first run
             } catch (RuntimeException ex) {
-                JOptionPane.showMessageDialog(null,
+                Ui.showMessage(null,
                         "Could not open the data files.\n\n" + ex.getMessage()
                                 + "\n\nMake sure the folder " + Db.DIR.getAbsolutePath() + " can be written to.",
                         "Data error", JOptionPane.ERROR_MESSAGE);

@@ -25,6 +25,9 @@ public class AdminPanel extends JPanel {
     private final DefaultTableModel admModel = Ui.model("Admin ID", "Name", "Email", "Requested", "Status");
     private final JTable admTable = new JTable(admModel);
     private ArrayList<DataStore.AdminRequest> admList = new ArrayList<>();
+    private final DefaultTableModel repModel = Ui.model("Reviewer", "Reason", "Reported By", "Uploader", "Date", "Status");
+    private final JTable repTable = new JTable(repModel);
+    private ArrayList<DataStore.Report> repList = new ArrayList<>();
     private final JTable pendTable = new JTable(pendModel);
     private final JTable apprTable = new JTable(apprModel);
     private final JTable rejTable = new JTable(rejModel);
@@ -52,7 +55,7 @@ public class AdminPanel extends JPanel {
 
         // Stat cards
         JPanel stats = Ui.clear(new JPanel(new GridLayout(1, 5, 14, 0)));
-        stats.add(stat(Ui.P_PEACH, Ui.CORAL, "Pending Review", pendingVal, pendingRing));
+        stats.add(stat(Ui.P_PEACH, Ui.CORAL, "Pending", pendingVal, pendingRing));
         stats.add(stat(Ui.P_MINT, Ui.ACCENT, "Approved", approvedVal, approvedRing));
         stats.add(stat(Ui.P_PURPLE, Ui.BRAND, "Rejected", rejectedVal, rejectedRing));
         stats.add(stat(Ui.P_BLUE, Ui.BLUE, "Students", studentsVal, null));
@@ -82,7 +85,7 @@ public class AdminPanel extends JPanel {
         JButton approve3 = Ui.primaryButton("Approve Instead");
         approve3.addActionListener(e -> approve(rejTable, rejList));
 
-        tabs.addTab("Pending Review", tabPanel(pendTable, approve, reject, open));
+        tabs.addTab("Pending", tabPanel(pendTable, approve, reject, open));
         tabs.addTab("Approved", tabPanel(apprTable, takeDown, open2));
         tabs.addTab("Rejected", tabPanel(rejTable, approve3));
 
@@ -90,7 +93,32 @@ public class AdminPanel extends JPanel {
         JButton rejectAdm = Ui.dangerButton("Reject");
         approveAdm.addActionListener(e -> decideAdmin(true));
         rejectAdm.addActionListener(e -> decideAdmin(false));
-        tabs.addTab("Admin Requests", tabPanel(admTable, approveAdm, rejectAdm));
+        tabs.addTab("Admins", tabPanel(admTable, approveAdm, rejectAdm));
+
+        // Reports about copyright, plagiarism and other problems
+        Ui.styleTable(repTable);
+        repTable.getColumnModel().getColumn(0).setPreferredWidth(190);
+        repTable.getColumnModel().getColumn(1).setPreferredWidth(150);
+        repTable.getSelectionModel().addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting() || loading) return;
+            int row = repTable.getSelectedRow();
+            if (row >= 0 && row < repList.size()) {
+                Material pm = DataStore.findMaterial(repList.get(row).materialId);
+                if (pm != null) fillPreview(pm);
+            }
+        });
+        JButton readRep = Ui.plainButton("Read Report");
+        JButton filesRep = Ui.plainButton("Open Files");
+        JButton downRep = Ui.dangerButton("Take Down Reviewer");
+        JButton dismissRep = Ui.plainButton("Dismiss Report");
+        readRep.addActionListener(e -> readReport());
+        filesRep.addActionListener(e -> {
+            DataStore.Report r = selectedReport();
+            if (r != null) openFile(DataStore.findMaterial(r.materialId));
+        });
+        downRep.addActionListener(e -> decideReport(true));
+        dismissRep.addActionListener(e -> decideReport(false));
+        tabs.addTab("Reports", tabPanel(repTable, readRep, filesRep, downRep, dismissRep));
 
         // Preview card on the right
         pvDesc.setEditable(false);
@@ -159,7 +187,7 @@ public class AdminPanel extends JPanel {
     private Material selected(JTable table, ArrayList<Material> list) {
         int row = table.getSelectedRow();
         if (row < 0 || row >= list.size()) {
-            JOptionPane.showMessageDialog(this, "Please select a reviewer first.");
+            Ui.showMessage(this, "Please select a reviewer first.");
             return null;
         }
         return list.get(row);
@@ -169,31 +197,36 @@ public class AdminPanel extends JPanel {
     private void approve(JTable table, ArrayList<Material> list) {
         Material m = selected(table, list);
         if (m == null) return;
-        if (!DataStore.approveMaterial(m)) JOptionPane.showMessageDialog(this, "That reviewer no longer exists.");
+        if (!DataStore.approveMaterial(m)) Ui.showMessage(this, "That reviewer no longer exists.");
+        else Ui.showMessage(this, "\"" + m.title + "\" was approved and is now live in the library.\n" + m.uploaderName + " was notified.",
+                "Reviewer approved", Ui.SUCCESS_MESSAGE);
         main.refreshAll();
     }
 
     private void reject(JTable table, ArrayList<Material> list) {
         Material m = selected(table, list);
         if (m == null) return;
-        String reason = JOptionPane.showInputDialog(this, "Reason for rejecting \"" + m.title + "\" (the student will see this):",
+        String reason = Ui.showInput(this, "Reason for rejecting \"" + m.title + "\" (the student will see this):",
                 "Reject reviewer", JOptionPane.PLAIN_MESSAGE);
         if (reason == null) return; // cancelled
         reason = reason.trim();
         if (reason.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please type a reason so the student knows what to fix.");
+            Ui.showMessage(this, "Please type a reason so the student knows what to fix.");
             return;
         }
-        if (!DataStore.rejectMaterial(m, reason)) JOptionPane.showMessageDialog(this, "That reviewer no longer exists.");
+        if (!DataStore.rejectMaterial(m, reason)) Ui.showMessage(this, "That reviewer no longer exists.");
+        else Ui.showMessage(this, "\"" + m.title + "\" was rejected.\n" + m.uploaderName + " was told the reason.",
+                "Reviewer rejected", JOptionPane.WARNING_MESSAGE);
         main.refreshAll();
     }
 
     private void takeDown(Material m) {
         if (m == null) return;
-        if (JOptionPane.showConfirmDialog(this, "Permanently remove \"" + m.title + "\" and its requests?", "Take down reviewer",
+        if (Ui.showConfirm(this, "Permanently remove \"" + m.title + "\" and its requests?", "Take down reviewer",
                 JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) return;
-        DataStore.deleteMaterial(m.id);
-        DataStore.addActivity(m.uploaderId, "Your reviewer \"" + m.title + "\" was removed by an admin", true);
+        DataStore.deleteMaterial(m.id, true);
+        Ui.showMessage(this, "\"" + m.title + "\" was taken down. The owner and the students who had it were notified.",
+                "Reviewer taken down", Ui.SUCCESS_MESSAGE);
         main.refreshAll();
     }
 
@@ -202,24 +235,59 @@ public class AdminPanel extends JPanel {
         Ui.openMaterialFile(this, m);   // admins may always view the files
     }
 
+    private DataStore.Report selectedReport() {
+        int row = repTable.getSelectedRow();
+        if (row < 0 || row >= repList.size()) {
+            Ui.showMessage(this, "Please select a report first.");
+            return null;
+        }
+        return repList.get(row);
+    }
+
+    private void readReport() {
+        DataStore.Report r = selectedReport();
+        if (r == null) return;
+        Ui.showMessage(this, "Reviewer: " + r.title + " (by " + r.uploaderName + ")\nReason: " + r.reason + "\nReported by: "
+                + r.reporterName + " on " + r.getDateText() + "\n\n" + r.details, "Report details", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** Take the reported material down, or dismiss the report. */
+    private void decideReport(boolean takeDown) {
+        DataStore.Report r = selectedReport();
+        if (r == null) return;
+        if (!r.status.equals("Open")) {
+            Ui.showMessage(this, "This report was already handled (" + r.status + ").");
+            return;
+        }
+        String q = takeDown
+                ? "Take down \"" + r.title + "\"? It is deleted with its files, requests and reviews. The owner and the students who had it are notified."
+                : "Dismiss this report? The reviewer stays online and the reporter is told no action was needed.";
+        if (Ui.showConfirm(this, q, takeDown ? "Take down reviewer" : "Dismiss report", JOptionPane.YES_NO_OPTION,
+                takeDown ? JOptionPane.WARNING_MESSAGE : JOptionPane.QUESTION_MESSAGE) != JOptionPane.YES_OPTION) return;
+        if (!DataStore.resolveReport(r.id, takeDown)) Ui.showMessage(this, "That report was already handled by another admin.");
+        else Ui.showMessage(this, takeDown ? "\"" + r.title + "\" was taken down." : "The report was dismissed.",
+                takeDown ? "Reviewer taken down" : "Report dismissed", Ui.SUCCESS_MESSAGE);
+        main.refreshAll();
+    }
+
     /** Approve or reject someone who asked to become an administrator. */
     private void decideAdmin(boolean approve) {
         int row = admTable.getSelectedRow();
         if (row < 0 || row >= admList.size()) {
-            JOptionPane.showMessageDialog(this, "Please select an admin request first.");
+            Ui.showMessage(this, "Please select an admin request first.");
             return;
         }
         DataStore.AdminRequest r = admList.get(row);
         if (!DataStore.ADMIN_PENDING.equals(r.status)) {
-            JOptionPane.showMessageDialog(this, "Only requests with status \"Pending\" can be approved or rejected.");
+            Ui.showMessage(this, "Only requests with status \"Pending\" can be approved or rejected.");
             return;
         }
         String q = approve
                 ? "Allow " + r.name + " (" + r.adminId + ") to register as an administrator?"
                 : "Reject the admin request of " + r.name + " (" + r.adminId + ")?";
-        if (JOptionPane.showConfirmDialog(this, q, approve ? "Approve admin access" : "Reject admin request",
+        if (Ui.showConfirm(this, q, approve ? "Approve admin access" : "Reject admin request",
                 JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) != JOptionPane.YES_OPTION) return;
-        if (!DataStore.decideAdminRequest(r, approve)) JOptionPane.showMessageDialog(this, "That request was already handled.");
+        if (!DataStore.decideAdminRequest(r, approve)) Ui.showMessage(this, "That request was already handled.");
         main.refreshAll();
     }
 
@@ -229,7 +297,7 @@ public class AdminPanel extends JPanel {
         pvTitle.setText(m.title);
         pvMeta.setText(m.type + "  •  " + m.subject);
         pvBy.setText("By " + m.uploaderName + "  •  " + m.getDateText());
-        pvFile.setText("File: " + m.fileName + " (" + m.fileSize + ")");
+        pvFile.setText(m.files.isEmpty() ? "Files: none attached" : "Files: " + m.files.size() + " attached (" + m.files.get(0).name + (m.files.size() > 1 ? ", ..." : "") + ")");
         if (Material.PENDING.equals(m.status)) {
             pvStatus.setForeground(Ui.WARN);
             pvStatus.setText("Status: Pending Review");
@@ -266,6 +334,7 @@ public class AdminPanel extends JPanel {
         int keepA = Ui.selId(apprTable, apprList, m -> m.id);
         int keepR = Ui.selId(rejTable, rejList, m -> m.id);
         int keepAdm = Ui.selId(admTable, admList, r -> r.id);
+        int keepRep = Ui.selId(repTable, repList, r -> r.id);
 
         pendList = DataStore.materialsByStatus(Material.PENDING);
         apprList = DataStore.materialsByStatus(Material.APPROVED);
@@ -281,6 +350,13 @@ public class AdminPanel extends JPanel {
         for (Material m : rejList)
             rejModel.addRow(new Object[]{m.title, m.subject, m.uploaderName, m.getDateText(), m.rejectReason});
 
+        repList = DataStore.reports();
+        repModel.setRowCount(0);
+        for (DataStore.Report r : repList)
+            repModel.addRow(new Object[]{r.title, r.reason, r.reporterName, r.uploaderName, r.getDateText(), r.status});
+        Ui.reselect(repTable, repList, r -> r.id, keepRep);
+        tabs.setTitle(4, "Reports (" + DataStore.openReportCount() + ")");
+
         admList = DataStore.adminRequests();
         admModel.setRowCount(0);
         for (DataStore.AdminRequest r : admList)
@@ -288,7 +364,7 @@ public class AdminPanel extends JPanel {
         Ui.reselect(admTable, admList, r -> r.id, keepAdm);
         int pendingAdmins = DataStore.pendingAdminRequestCount();
         adminReqVal.setText(String.valueOf(pendingAdmins));
-        tabs.setTitle(3, "Admin Requests (" + pendingAdmins + ")");
+        tabs.setTitle(3, "Admins (" + pendingAdmins + ")");
 
         Ui.reselect(pendTable, pendList, m -> m.id, keepP);
         Ui.reselect(apprTable, apprList, m -> m.id, keepA);
@@ -302,7 +378,7 @@ public class AdminPanel extends JPanel {
         pendingRing.setValue(total == 0 ? 0 : pendList.size() / (double) total, total == 0 ? "0%" : Math.round(100.0 * pendList.size() / total) + "%");
         approvedRing.setValue(total == 0 ? 0 : apprList.size() / (double) total, total == 0 ? "0%" : Math.round(100.0 * apprList.size() / total) + "%");
         rejectedRing.setValue(total == 0 ? 0 : rejList.size() / (double) total, total == 0 ? "0%" : Math.round(100.0 * rejList.size() / total) + "%");
-        tabs.setTitle(0, "Pending Review (" + pendList.size() + ")");
+        tabs.setTitle(0, "Pending (" + pendList.size() + ")");
         tabs.setTitle(1, "Approved (" + apprList.size() + ")");
         tabs.setTitle(2, "Rejected (" + rejList.size() + ")");
 

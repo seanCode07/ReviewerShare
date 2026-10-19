@@ -64,7 +64,7 @@ public class RequestsPanel extends JPanel {
     private Request selected(JTable table, ArrayList<Request> list) {
         int row = table.getSelectedRow();
         if (row < 0 || row >= list.size()) {
-            JOptionPane.showMessageDialog(this, "Please select a request first.");
+            Ui.showMessage(this, "Please select a request first.");
             return null;
         }
         return list.get(row);
@@ -75,16 +75,16 @@ public class RequestsPanel extends JPanel {
         Request r = selected(inTable, inList);
         if (r == null) return;
         if (!r.status.equals(from)) {
-            JOptionPane.showMessageDialog(this, "Only requests with status \"" + from + "\" can be set to " + to + ".");
+            Ui.showMessage(this, "Only requests with status \"" + from + "\" can be set to " + to + ".");
             return;
         }
         if (!DataStore.changeRequestStatus(r, from, to)) {
-            JOptionPane.showMessageDialog(this, "This request was just changed (for example, the student cancelled it). The list has been refreshed.");
+            Ui.showMessage(this, "This request was just changed (for example, the student cancelled it). The list has been refreshed.");
             main.refreshAll();
             return;
         }
         if (DataStore.notifications) {
-            JOptionPane.showMessageDialog(this, "Request " + to.toLowerCase() + ".");
+            Ui.showMessage(this, "Request " + to.toLowerCase() + ".");
         }
         main.refreshAll();
     }
@@ -94,7 +94,7 @@ public class RequestsPanel extends JPanel {
         Request r = selected(sentTable, sentList);
         if (r == null) return;
         if (!r.status.equals("Approved") && !r.status.equals("Completed")) {
-            JOptionPane.showMessageDialog(this, "You can view the file once the owner approves your request.");
+            Ui.showMessage(this, "You can view the file once the owner approves your request.");
             return;
         }
         Ui.openMaterialFile(this, DataStore.findMaterial(r.materialId));
@@ -105,15 +105,15 @@ public class RequestsPanel extends JPanel {
         Request r = selected(sentTable, sentList);
         if (r == null) return;
         if (!r.status.equals("Pending")) {
-            JOptionPane.showMessageDialog(this, "Only requests with status \"Pending\" can be cancelled.");
+            Ui.showMessage(this, "Only requests with status \"Pending\" can be cancelled.");
             return;
         }
-        if (JOptionPane.showConfirmDialog(this, "Cancel your request for \"" + r.materialTitle + "\"?", "Cancel request",
+        if (Ui.showConfirm(this, "Cancel your request for \"" + r.materialTitle + "\"?", "Cancel request",
                 JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
         if (DataStore.cancelRequest(r)) {
-            JOptionPane.showMessageDialog(this, "Your request was cancelled.");
+            Ui.showMessage(this, "Your request was cancelled.");
         } else {
-            JOptionPane.showMessageDialog(this, "This request can no longer be cancelled - the owner already responded.");
+            Ui.showMessage(this, "This request can no longer be cancelled - the owner already responded.");
         }
         main.refreshAll();
     }

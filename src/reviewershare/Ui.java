@@ -92,8 +92,8 @@ public class Ui {
     public static Color themeBg() { return light ? L_BG : BG; }
     public static Color themeCard() { return light ? L_CARD : CARD; }
     private static Color lineColor() { return light ? L_BORDER : BORDER; }
-    private static Color textCol() { return light ? L_TEXT : TEXT; }
-    private static Color mutedCol() { return light ? L_MUTED : MUTED; }
+    public static Color textCol() { return light ? L_TEXT : TEXT; }
+    public static Color mutedCol() { return light ? L_MUTED : MUTED; }
     private static Color trackCol() { return light ? new Color(0xE5E7EB) : new Color(0x2C3170); }
     private static Color hoverCol() { return light ? new Color(0xF4F2FB) : new Color(0x282C68); }
 
@@ -458,6 +458,17 @@ public class Ui {
                 g2.drawLine(x + s - 6, y + half - 4, x + s - 1, y + half);
                 g2.drawLine(x + s - 6, y + half + 4, x + s - 1, y + half);
                 break;
+            case "Management": {
+                g2.drawOval(x + 4, y + 4, s - 8, s - 8);
+                g2.drawOval(x + half - 2, y + half - 2, 4, 4);
+                for (int i = 0; i < 4; i++) {
+                    double a = i * Math.PI / 2;
+                    int cx = x + half, cy = y + half;
+                    g2.drawLine(cx + (int) Math.round(Math.cos(a) * (half - 3)), cy + (int) Math.round(Math.sin(a) * (half - 3)),
+                            cx + (int) Math.round(Math.cos(a) * half), cy + (int) Math.round(Math.sin(a) * half));
+                }
+                break;
+            }
             default:
                 g2.drawOval(x + 3, y + 3, s - 6, s - 6);
         }
@@ -932,7 +943,15 @@ public class Ui {
                 return RED;
             case "Completed":
             case "Registered":
+            case "Resolved":
+            case "Dismissed":
                 return BLUE;
+            case "Open":
+            case "Suspended":
+                return s.equals("Open") ? WARN : RED;
+            case "Action Taken":
+            case "Active":
+                return GREEN;
             default:
                 return (s.startsWith("★") || s.startsWith("☆")) ? ORANGE : null;
         }
@@ -1161,28 +1180,250 @@ public class Ui {
         form.add(Box.createVerticalStrut(10));
     }
 
-    /** Opens the attached file of a material if the current user is allowed to see it (otherwise explains why not). */
+    /** Opens an attached file of a material if the current user is allowed to see it (otherwise explains why not). */
     public static void openMaterialFile(Component parent, Material m) {
+        openMaterialFile(parent, m, null);
+    }
+
+    /** Same, for one chosen file. When which is null and the material has several files, the user picks one. */
+    public static void openMaterialFile(Component parent, Material m, Material.FileInfo which) {
         if (m == null) {
-            JOptionPane.showMessageDialog(parent, "This reviewer is no longer available.");
+            showMessage(parent, "This reviewer is no longer available.");
             return;
         }
         if (!DataStore.canViewFile(m)) {
-            JOptionPane.showMessageDialog(parent, "You can view this file after the owner approves your request.",
+            showMessage(parent, "You can view this file after the owner approves your request.",
                     "Access needed", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        File f = (m.filePath == null || m.filePath.isEmpty()) ? null : new File(m.filePath);
+        if (m.files.isEmpty()) {
+            showMessage(parent, "This material has no attached file.");
+            return;
+        }
+        Material.FileInfo fi = which != null ? which : pickFile(parent, m);
+        if (fi == null) return;
+        File f = fi.path == null || fi.path.isEmpty() ? null : new File(fi.path);
         if (f == null || !f.exists()) {
-            JOptionPane.showMessageDialog(parent, "This material has no attached file.");
+            showMessage(parent, "\"" + fi.name + "\" could not be found in the data folder.", "File missing", JOptionPane.WARNING_MESSAGE);
             return;
         }
         try {
             if (!Desktop.isDesktopSupported()) throw new UnsupportedOperationException("Opening files is not supported here.");
             Desktop.getDesktop().open(f);
         } catch (Exception ex) {
-            JOptionPane.showMessageDialog(parent, "Could not open the file: " + ex.getMessage());
+            showMessage(parent, "Could not open the file: " + ex.getMessage(), "Cannot open file", JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    private static Material.FileInfo pickFile(Component parent, Material m) {
+        if (m.files.size() == 1) return m.files.get(0);
+        DefaultListModel<String> model = new DefaultListModel<>();
+        for (Material.FileInfo f : m.files) model.addElement(f.name + "  (" + f.size + ")");
+        JList<String> list = new JList<>(model);
+        list.setBackground(FIELD);
+        list.setForeground(TEXT);
+        list.setFont(BODY);
+        list.setSelectionBackground(new Color(0x2F3590));
+        list.setSelectionForeground(Color.WHITE);
+        list.setSelectedIndex(0);
+        JScrollPane sp = scrollBox(list);
+        sp.setPreferredSize(new Dimension(380, 150));
+        int r = showConfirm(parent, sp, "Choose a file to open", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+        int i = list.getSelectedIndex();
+        return r == JOptionPane.OK_OPTION && i >= 0 ? m.files.get(i) : null;
+    }
+
+    // ---------- Pop-up dialogs (replace the plain JOptionPane boxes) ----------
+    public static final int SUCCESS_MESSAGE = 100;
+
+    private static Color kindColor(int kind) {
+        switch (kind) {
+            case SUCCESS_MESSAGE: return GREEN;
+            case JOptionPane.ERROR_MESSAGE: return RED;
+            case JOptionPane.WARNING_MESSAGE: return WARN;
+            case JOptionPane.INFORMATION_MESSAGE: return BLUE;
+            default: return BRAND;
+        }
+    }
+
+    private static String kindTitle(int kind) {
+        switch (kind) {
+            case SUCCESS_MESSAGE: return "Done";
+            case JOptionPane.ERROR_MESSAGE: return "Something went wrong";
+            case JOptionPane.WARNING_MESSAGE: return "Please note";
+            case JOptionPane.QUESTION_MESSAGE: return "Please confirm";
+            default: return "Message";
+        }
+    }
+
+    /** Picks a look for messages that did not say which kind they are. */
+    private static int guessKind(String text) {
+        String t = text.toLowerCase();
+        for (String w : new String[]{"please", "cannot", "can't", "can no longer", "only requests", "no longer", "no file",
+                "no attached", "not available", "already", "not allowed", "not correct", "too many", "could not"})
+            if (t.contains(w)) return JOptionPane.WARNING_MESSAGE;
+        for (String w : new String[]{"submitted", "saved", "was sent", "sent to", "created", "changed", "deleted", "approved",
+                "was reset", "cancelled", "updated", "posted", "removed", "reported", "registered", "request "})
+            if (t.contains(w)) return SUCCESS_MESSAGE;
+        return JOptionPane.INFORMATION_MESSAGE;
+    }
+
+    private static String html(String text) {
+        if (text.startsWith("<html")) return text;
+        String safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>");
+        return "<html><body style='width:330px'>" + safe + "</body></html>";
+    }
+
+    /** The round colored icon on the left of a pop-up. */
+    private static class KindBadge extends JComponent {
+        private final int kind;
+
+        KindBadge(int kind) {
+            this.kind = kind;
+        }
+
+        @Override public Dimension getPreferredSize() { return new Dimension(48, 48); }
+        @Override public Dimension getMaximumSize() { return new Dimension(48, 48); }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color c = kindColor(kind);
+            g2.setColor(new Color(c.getRed(), c.getGreen(), c.getBlue(), 55));
+            g2.fillOval(0, 0, 47, 47);
+            g2.setColor(c);
+            g2.setStroke(new BasicStroke(3.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.drawOval(1, 1, 45, 45);
+            switch (kind) {
+                case SUCCESS_MESSAGE:
+                    g2.drawLine(14, 25, 21, 32);
+                    g2.drawLine(21, 32, 34, 16);
+                    break;
+                case JOptionPane.ERROR_MESSAGE:
+                    g2.drawLine(16, 16, 31, 31);
+                    g2.drawLine(31, 16, 16, 31);
+                    break;
+                case JOptionPane.WARNING_MESSAGE:
+                    g2.drawLine(24, 12, 24, 26);
+                    g2.fillOval(22, 32, 4, 4);
+                    break;
+                case JOptionPane.QUESTION_MESSAGE:
+                    g2.setFont(new Font("SansSerif", Font.BOLD, 26));
+                    g2.drawString("?", 17, 34);
+                    break;
+                default:
+                    g2.drawLine(24, 21, 24, 35);
+                    g2.fillOval(22, 11, 4, 4);
+            }
+            g2.dispose();
+        }
+    }
+
+    /** Shows a styled dialog and returns the code of the clicked button (or CLOSED_OPTION). */
+    private static int open(Component parent, Object msg, String title, int kind, String[] labels, int[] codes,
+                            boolean dangerYes, JComponent focusOn) {
+        Window owner = parent == null ? null : (parent instanceof Window ? (Window) parent : SwingUtilities.getWindowAncestor(parent));
+        JDialog d = new JDialog(owner, title == null ? "ReviewerShare" : title, Dialog.ModalityType.APPLICATION_MODAL);
+        int[] result = {JOptionPane.CLOSED_OPTION};
+
+        JPanel text = clear(new JPanel());
+        text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+        JLabel heading = label(title == null || title.isEmpty() ? kindTitle(kind) : title, H2, TEXT);
+        heading.setAlignmentX(Component.LEFT_ALIGNMENT);
+        text.add(heading);
+        text.add(Box.createVerticalStrut(8));
+        if (msg instanceof JComponent) {
+            ((JComponent) msg).setAlignmentX(Component.LEFT_ALIGNMENT);
+            text.add((JComponent) msg);
+        } else {
+            JLabel m = label(html(String.valueOf(msg)), BODY, TEXT);
+            m.setAlignmentX(Component.LEFT_ALIGNMENT);
+            text.add(m);
+        }
+        JPanel body = clear(new JPanel(new BorderLayout(18, 0)));
+        body.setBorder(new EmptyBorder(24, 26, 8, 26));
+        if (kind != JOptionPane.PLAIN_MESSAGE) {
+            JPanel badge = clear(new JPanel(new BorderLayout()));
+            badge.add(new KindBadge(kind), BorderLayout.NORTH);
+            body.add(badge, BorderLayout.WEST);
+        }
+        body.add(text, BorderLayout.CENTER);
+
+        JPanel row = clear(new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0)));
+        row.setBorder(new EmptyBorder(10, 26, 18, 26));
+        RoundButton first = null;
+        for (int i = labels.length - 1; i >= 0; i--) {
+            final int code = codes[i];
+            boolean main = i == 0;
+            RoundButton b = main ? (dangerYes ? dangerButton(labels[i]) : primaryButton(labels[i])) : plainButton(labels[i]);
+            b.addActionListener(e -> {
+                result[0] = code;
+                d.dispose();
+            });
+            row.add(b);
+            if (main) first = b;
+        }
+        // buttons were added from last to first; show the main one on the right
+        d.getContentPane().setBackground(themeCard());
+        d.add(body, BorderLayout.CENTER);
+        d.add(row, BorderLayout.SOUTH);
+        if (light) applyTheme(d.getContentPane(), true);
+        d.getRootPane().setDefaultButton(first);
+        d.getRootPane().registerKeyboardAction(e -> d.dispose(),
+                KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+        d.pack();
+        d.setSize(Math.max(d.getWidth(), 460), d.getHeight() + 6);
+        d.setLocationRelativeTo(parent);
+        if (focusOn != null)
+            d.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override public void windowOpened(java.awt.event.WindowEvent e) { focusOn.requestFocusInWindow(); }
+            });
+        d.setVisible(true);
+        return result[0];
+    }
+
+    public static void showMessage(Component parent, Object msg) {
+        showMessage(parent, msg, null, -1);
+    }
+
+    public static void showMessage(Component parent, Object msg, String title, int type) {
+        int kind = type;
+        if (type == -1 || type == JOptionPane.PLAIN_MESSAGE && !(msg instanceof JComponent))
+            kind = msg instanceof JComponent ? JOptionPane.INFORMATION_MESSAGE : guessKind(String.valueOf(msg));
+        if (type == JOptionPane.PLAIN_MESSAGE && msg instanceof JComponent) kind = JOptionPane.PLAIN_MESSAGE;
+        open(parent, msg, title, kind, new String[]{"OK"}, new int[]{JOptionPane.OK_OPTION}, false, null);
+    }
+
+    public static int showConfirm(Component parent, Object msg, String title, int optionType) {
+        return showConfirm(parent, msg, title, optionType, JOptionPane.QUESTION_MESSAGE);
+    }
+
+    public static int showConfirm(Component parent, Object msg, String title, int optionType, int messageType) {
+        boolean yesNo = optionType == JOptionPane.YES_NO_OPTION;
+        String[] labels = yesNo ? new String[]{"Yes", "No"} : new String[]{"OK", "Cancel"};
+        int[] codes = yesNo ? new int[]{JOptionPane.YES_OPTION, JOptionPane.NO_OPTION}
+                : new int[]{JOptionPane.OK_OPTION, JOptionPane.CANCEL_OPTION};
+        int r = open(parent, msg, title, messageType, labels, codes, messageType == JOptionPane.WARNING_MESSAGE && yesNo, null);
+        return r == JOptionPane.CLOSED_OPTION ? (yesNo ? JOptionPane.NO_OPTION : JOptionPane.CANCEL_OPTION) : r;
+    }
+
+    /** Asks for one line of text. Returns null if cancelled. */
+    public static String showInput(Component parent, Object msg, String title, int type) {
+        JTextField f = field();
+        f.setPreferredSize(new Dimension(340, 38));
+        JPanel box = clear(new JPanel());
+        box.setLayout(new BoxLayout(box, BoxLayout.Y_AXIS));
+        JLabel l = label(html(String.valueOf(msg)), BODY, TEXT);
+        l.setAlignmentX(Component.LEFT_ALIGNMENT);
+        f.setAlignmentX(Component.LEFT_ALIGNMENT);
+        f.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        box.add(l);
+        box.add(Box.createVerticalStrut(8));
+        box.add(f);
+        int r = open(parent, box, title, JOptionPane.QUESTION_MESSAGE, new String[]{"OK", "Cancel"},
+                new int[]{JOptionPane.OK_OPTION, JOptionPane.CANCEL_OPTION}, false, f);
+        return r == JOptionPane.OK_OPTION ? f.getText() : null;
     }
 
     // ---------- Misc ----------

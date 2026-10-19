@@ -19,6 +19,11 @@ public class DashboardPanel extends JPanel {
     private final JTable table = new JTable(model);
     private final JTextArea activityArea = Ui.textArea(6);
     private ArrayList<Material> recent = new ArrayList<>();
+    private final JLabel pageLabel = Ui.label(" ", Ui.SMALL, Ui.MUTED);
+    private final JButton prevBtn = Ui.plainButton("←");
+    private final JButton nextBtn = Ui.plainButton("→");
+    private int page = 0;
+    private static final int PAGE_SIZE = 5;
 
     private final Ui.Ring ringLive = new Ui.Ring(Ui.BRAND, 84);
     private final Ui.Ring ringAccepted = new Ui.Ring(Ui.CORAL, 84);
@@ -57,7 +62,7 @@ public class DashboardPanel extends JPanel {
         viewBtn.addActionListener(e -> {
             int row = table.getSelectedRow();
             if (row < 0) {
-                JOptionPane.showMessageDialog(this, "Please select a reviewer first.");
+                Ui.showMessage(this, "Please select a reviewer first.");
             } else {
                 main.showDetails(recent.get(row));
             }
@@ -70,6 +75,18 @@ public class DashboardPanel extends JPanel {
         btnRow.add(share);
         btnRow.add(browse);
         btnRow.add(view);
+        prevBtn.addActionListener(e -> {
+            page--;
+            refresh();
+        });
+        nextBtn.addActionListener(e -> {
+            page++;
+            refresh();
+        });
+        btnRow.add(Box.createHorizontalStrut(10));
+        btnRow.add(prevBtn);
+        btnRow.add(pageLabel);
+        btnRow.add(nextBtn);
 
         Ui.RoundPanel recentCard = Ui.card().setAccent(Ui.BRAND);
         recentCard.setLayout(new BorderLayout(0, 8));
@@ -148,7 +165,9 @@ public class DashboardPanel extends JPanel {
     }
 
     private static String shortSubject(String s) {
-        return s.equals("Computer Science") ? "Comp. Sci." : s.equals("Mathematics") ? "Math" : s;
+        if (s.equals("Computer Science")) return "Comp. Sci.";
+        if (s.equals("Mathematics")) return "Math";
+        return s.length() > 11 ? s.substring(0, 10) + "." : s;
     }
 
     /** Reloads greeting, metrics, table, gauges, chart, and activity from the data files. */
@@ -200,18 +219,27 @@ public class DashboardPanel extends JPanel {
         barAnswered.setValue(ans, "Requests you answered", pct(ans));
 
         // Chart: approved materials per subject
-        String[] subjects = DataStore.SUBJECTS;
+        String[] subjects = DataStore.subjectArray();
         String[] labels = new String[subjects.length];
         double[] counts = new double[subjects.length];
         for (int i = 0; i < subjects.length; i++) {
             labels[i] = shortSubject(subjects[i]);
             for (Material m : approved) if (m.subject.equals(subjects[i])) counts[i]++;
         }
-        chart.setData(labels, counts, new Color[]{Ui.ACCENT, Ui.CORAL, Ui.BRAND, Ui.BLUE});
+        Color[] palette = {Ui.ACCENT, Ui.CORAL, Ui.BRAND, Ui.BLUE, Ui.ORANGE, Ui.GREEN};
+        Color[] colors = new Color[subjects.length];
+        for (int i = 0; i < colors.length; i++) colors[i] = palette[i % palette.length];
+        chart.setData(labels, counts, colors);
 
         // Table
         int keep = Ui.selId(table, recent, m -> m.id);
-        recent = new ArrayList<>(approved.subList(0, Math.min(5, approved.size())));
+        int pages = Math.max(1, (approved.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        if (page >= pages) page = pages - 1;
+        if (page < 0) page = 0;
+        recent = new ArrayList<>(approved.subList(page * PAGE_SIZE, Math.min(approved.size(), page * PAGE_SIZE + PAGE_SIZE)));
+        pageLabel.setText((approved.isEmpty() ? 0 : page * PAGE_SIZE + 1) + "-" + (page * PAGE_SIZE + recent.size()) + " of " + approved.size());
+        prevBtn.setEnabled(page > 0);
+        nextBtn.setEnabled(page < pages - 1);
         model.setRowCount(0);
         for (Material m : recent) {
             model.addRow(new Object[]{m.title, m.subject, m.type, m.uploaderName, m.getStars()});

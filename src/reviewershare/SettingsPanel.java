@@ -13,11 +13,11 @@ public class SettingsPanel extends JPanel {
     private final JTextField nameField = Ui.field();
     private final JTextField idField = Ui.field();
     private final JTextField emailField = Ui.field();
-    private final JTextField courseField = Ui.field();
+    private final JComboBox<String> courseBox = Ui.style(new JComboBox<>());
     private final JPasswordField curPw = Ui.passwordField();
     private final JPasswordField newPw = Ui.passwordField();
     private final JPasswordField newPw2 = Ui.passwordField();
-    private final JCheckBox notifBox = Ui.check("Notifications - show messages when requests and reviewers change");
+    private final JCheckBox notifBox = Ui.check("Show notification pop-ups");
     private final JCheckBox darkBox = Ui.check("Light Mode");
 
     public SettingsPanel(MainFrame main) {
@@ -43,14 +43,15 @@ public class SettingsPanel extends JPanel {
 
         // ----- Profile card (2 x 2 fields) -----
         idField.setEditable(false);
+        idField.setToolTipText("The ID cannot be changed");
         JButton save = Ui.primaryButton("Save Changes");
         save.addActionListener(e -> saveProfile());
         Ui.RoundPanel profile = box("Profile Information", "Update how your name and contact details appear.");
         JPanel grid = Ui.clear(new JPanel(new GridLayout(0, 2, 12, 10)));
         grid.add(group("Full Name", nameField));
-        grid.add(group("Student ID (cannot be changed)", idField));
+        grid.add(group("Student ID", idField));
         grid.add(group("Email Address", emailField));
-        grid.add(group("Course / Program", courseField));
+        grid.add(group("Course / Program", courseBox));
         profile.add(finish(grid));
         profile.add(Box.createVerticalStrut(10));
         profile.add(finish(rightRow(save)));
@@ -167,13 +168,17 @@ public class SettingsPanel extends JPanel {
     private void saveProfile() {
         String name = nameField.getText().trim();
         String email = emailField.getText().trim();
-        String course = courseField.getText().trim();
+        String course = courseBox.getSelectedItem() == null ? "" : ((String) courseBox.getSelectedItem()).trim();
         if (name.isEmpty() || course.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Full Name and Course cannot be empty.", "Missing information", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "Full Name and Course cannot be empty.", "Missing information", JOptionPane.ERROR_MESSAGE);
             return;
         }
         if (!Ui.isValidEmail(email)) {
-            JOptionPane.showMessageDialog(this, "Please enter a valid email address (like name@school.edu.ph).", "Invalid email", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "Please enter a valid email address (like name@school.edu.ph).", "Invalid email", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        if (DataStore.emailInUse(email, DataStore.currentUser.id)) {
+            Ui.showMessage(this, "That email is already used by another account.", "Email in use", JOptionPane.ERROR_MESSAGE);
             return;
         }
         Student s = DataStore.currentUser;
@@ -182,7 +187,7 @@ public class SettingsPanel extends JPanel {
         s.email = email;
         s.course = course;
         DataStore.updateProfile(s);   // names shown on materials and requests come from the database, so they update everywhere
-        JOptionPane.showMessageDialog(this, "Profile saved" + (oldName.equals(name) ? "." : " (name updated)."));
+        Ui.showMessage(this, "Profile saved" + (oldName.equals(name) ? "." : " (name updated)."));
         main.refreshAll();
     }
 
@@ -192,27 +197,27 @@ public class SettingsPanel extends JPanel {
         String a = new String(newPw.getPassword());
         String b = new String(newPw2.getPassword());
         if (cur.isEmpty() || a.isEmpty() || b.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please fill in all three password fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "Please fill in all three password fields.", "Missing information", JOptionPane.ERROR_MESSAGE);
         } else if (a.length() < 6) {
-            JOptionPane.showMessageDialog(this, "The new password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "The new password must be at least 6 characters.", "Weak password", JOptionPane.ERROR_MESSAGE);
         } else if (!a.equals(b)) {
-            JOptionPane.showMessageDialog(this, "The two new passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "The two new passwords do not match.", "Password mismatch", JOptionPane.ERROR_MESSAGE);
         } else if (a.equals(cur)) {
-            JOptionPane.showMessageDialog(this, "The new password must be different from the current one.", "Same password", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "The new password must be different from the current one.", "Same password", JOptionPane.ERROR_MESSAGE);
         } else if (!DataStore.changePassword(DataStore.currentUser.id, cur, a)) {
-            JOptionPane.showMessageDialog(this, "Your current password is not correct.", "Wrong password", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, "Your current password is not correct.", "Wrong password", JOptionPane.ERROR_MESSAGE);
         } else {
             curPw.setText("");
             newPw.setText("");
             newPw2.setText("");
-            JOptionPane.showMessageDialog(this, "Your password was changed. Use the new password the next time you sign in.");
+            Ui.showMessage(this, "Your password was changed. Use the new password the next time you sign in.");
         }
     }
 
     /** Asks twice, then deletes the account together with all of its data and returns to the sign-in screen. */
     private void deleteAccount() {
         Student me = DataStore.currentUser;
-        int first = JOptionPane.showConfirmDialog(this,
+        int first = Ui.showConfirm(this,
                 "Delete the account of " + me.name + "?\n\nYour profile, shared reviewers, requests and activity will be\n"
                         + "permanently deleted. This cannot be undone.",
                 "Delete account", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
@@ -225,15 +230,15 @@ public class SettingsPanel extends JPanel {
         box.add(left(Ui.label("Type your password to confirm:", Ui.BOLD, Ui.TEXT)));
         box.add(Box.createVerticalStrut(6));
         box.add(left(pw));
-        int second = JOptionPane.showConfirmDialog(this, box, "Confirm deletion", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        int second = Ui.showConfirm(this, box, "Confirm deletion", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
         if (second != JOptionPane.OK_OPTION) return;
 
         String error = DataStore.deleteAccount(me.id, new String(pw.getPassword()));
         if (error != null) {
-            JOptionPane.showMessageDialog(this, error, "Could not delete account", JOptionPane.ERROR_MESSAGE);
+            Ui.showMessage(this, error, "Could not delete account", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        JOptionPane.showMessageDialog(this, "Your account and its data were deleted.\nYou can register again anytime with your ID and email.");
+        Ui.showMessage(this, "Your account and its data were deleted.\nYou can register again anytime with your ID and email.");
         main.signOut();
     }
 
@@ -248,14 +253,21 @@ public class SettingsPanel extends JPanel {
                     + DataStore.countMaterials(Material.APPROVED) + " Approved   |   "
                     + DataStore.countMaterials(Material.REJECTED) + " Rejected");
         } else {
-            infoLabel.setText(s.section + " - Student ID: " + s.id);
+            infoLabel.setText(s.program() + " - Student ID: " + s.id);
             statsLabel.setText(DataStore.myMaterials().size() + " Shared   |   " + DataStore.sentRequests().size()
                     + " Requested   |   " + DataStore.completedRequests().size() + " Completed");
         }
         nameField.setText(s.name);
         idField.setText(s.id);
         emailField.setText(s.email);
-        courseField.setText(s.course);
+        courseBox.removeAllItems();
+        boolean found = false;
+        for (String p : DataStore.programArray()) {
+            courseBox.addItem(p);
+            if (p.equals(s.course)) found = true;
+        }
+        if (!found) courseBox.addItem(s.course);   // for example "Administrator"
+        courseBox.setSelectedItem(s.course);
         notifBox.setSelected(DataStore.notifications);
         darkBox.setSelected(Ui.light);
     }

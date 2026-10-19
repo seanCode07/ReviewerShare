@@ -36,6 +36,7 @@ public class MainFrame extends JFrame {
     private MyLibraryPanel myLibrary;
     // Admin screen
     private AdminPanel adminPanel;
+    private AdminManagePanel managePanel;
     // Shared screens
     private final ReviewerLibraryPanel library;
     private final ReviewerDetailsPanel details;
@@ -62,6 +63,8 @@ public class MainFrame extends JFrame {
         if (admin) {
             adminPanel = new AdminPanel(this);
             content.add(adminPanel, "Moderation");
+            managePanel = new AdminManagePanel(this);
+            content.add(managePanel, "Management");
         } else {
             dashboard = new DashboardPanel(this);
             addPanel = new AddReviewerPanel(this);
@@ -131,7 +134,7 @@ public class MainFrame extends JFrame {
         side.add(Box.createVerticalStrut(26));
 
         side.add(caption("MAIN MENU"));
-        String[] pages = admin ? new String[]{"Moderation", "Reviewers"}
+        String[] pages = admin ? new String[]{"Moderation", "Management", "Reviewers"}
                 : new String[]{"Dashboard", "Reviewers", "Add Reviewer", "Requests", "My Library"};
         for (String name : pages) addNav(side, name);
 
@@ -212,6 +215,10 @@ public class MainFrame extends JFrame {
                 pageTitle.setText("Admin Moderation");
                 pageSub.setText("Approve or reject new submissions in real time");
                 break;
+            case "Management":
+                pageTitle.setText("Management");
+                pageSub.setText("Users, subjects, programs, school records and the audit log");
+                break;
             case "Settings":
                 pageTitle.setText("Settings");
                 pageSub.setText("Your profile and preferences");
@@ -237,7 +244,9 @@ public class MainFrame extends JFrame {
         Student me = DataStore.currentUser;
         if (admin) {
             adminPanel.refresh();
+            managePanel.refresh();
         } else {
+            addPanel.refresh();
             dashboard.refresh();
             requests.refresh();
             myLibrary.refresh();
@@ -247,12 +256,12 @@ public class MainFrame extends JFrame {
         if (includeSettings) settings.refresh();
 
         userName.setText(me.name);
-        userRole.setText(admin ? "Administrator" : me.section + " • " + me.id);
+        userRole.setText(admin ? "Administrator" : me.program() + " • " + me.id);
         avatar.setPerson(me.name);
         bell.setCount(unread);
 
         if (admin) {
-            int n = DataStore.countMaterials(Material.PENDING) + DataStore.pendingAdminRequestCount();
+            int n = DataStore.countMaterials(Material.PENDING) + DataStore.pendingAdminRequestCount() + DataStore.openReportCount();
             navButtons.get("Moderation").setText(n > 0 ? "Moderation (" + n + ")" : "Moderation");
         } else {
             int n = DataStore.pendingCount();
@@ -271,6 +280,23 @@ public class MainFrame extends JFrame {
             long v = Db.version();
             if (v == lastVersion) return;
             lastVersion = v;
+
+            // An admin may have removed or suspended this account while it was open
+            String myId = DataStore.currentUser.id;
+            if (DataStore.findStudent(myId) == null) {
+                poll.stop();
+                Ui.showMessage(this, "Your account no longer exists, so you were signed out.", "Signed out", JOptionPane.WARNING_MESSAGE);
+                signOut();
+                return;
+            }
+            if (DataStore.isSuspended(myId)) {
+                poll.stop();
+                String why = DataStore.suspensionReason(myId);
+                Ui.showMessage(this, "Your account was suspended by an administrator." + (why.isEmpty() ? "" : "\nReason: " + why),
+                        "Account suspended", JOptionPane.WARNING_MESSAGE);
+                signOut();
+                return;
+            }
 
             long latest = DataStore.latestActivityId(DataStore.currentUser.id);
             ArrayList<DataStore.Activity> fresh = DataStore.newNotifications(DataStore.currentUser.id, lastActivityId, latest);
@@ -309,11 +335,11 @@ public class MainFrame extends JFrame {
         area.setCaretPosition(0);
         JScrollPane sp = Ui.scrollBox(area);
         sp.setPreferredSize(new Dimension(460, 300));
-        JOptionPane.showMessageDialog(this, sp, "Recent activity", JOptionPane.PLAIN_MESSAGE);
+        Ui.showMessage(this, sp, "Recent activity", JOptionPane.PLAIN_MESSAGE);
     }
 
     private void logout() {
-        if (JOptionPane.showConfirmDialog(this, "Log out of ReviewerShare?", "Logout", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+        if (Ui.showConfirm(this, "Log out of ReviewerShare?", "Logout", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
             signOut();
         }
     }

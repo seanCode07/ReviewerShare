@@ -13,6 +13,12 @@ public class Student {
         this.role = role;
     }
 
+    /** The section if there is a real one, otherwise the course/program (never "N/A"). */
+    public String program() {
+        if (section != null && !section.trim().isEmpty() && !section.trim().equalsIgnoreCase("N/A")) return section;
+        return course == null || course.trim().isEmpty() ? "Student" : course;
+    }
+
     public boolean isAdmin() {
         return "admin".equals(role);
     }

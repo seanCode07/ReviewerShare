@@ -19,7 +19,8 @@ import java.util.function.Function;
  * A small file-based database - no extra libraries needed.
  *
  * Each table is a plain text file (one row per line, fields separated by TAB) inside ~/ReviewerShareData:
- *   students.dat, materials.dat, requests.dat, activities.dat, adminreqs.dat, meta.dat (a version counter)
+ *   students.dat, materials.dat, files.dat, requests.dat, activities.dat, adminreqs.dat, reviews.dat, reports.dat,
+ *   audit.dat, attempts.dat, suspended.dat, roster.dat, subjects.dat, programs.dat, meta.dat (a version counter)
  *
  * Every running copy of the app uses the SAME files. A lock file makes sure only one window writes at a time,
  * and every write bumps the version number in meta.dat, which the other windows poll to know when to refresh.
@@ -50,6 +51,43 @@ public class Db {
         public LocalDate date;
     }
 
+    /** A written review (stars + comment) of a material. */
+    public static class ReviewRow {
+        public int id, materialId, stars;
+        public String userId, userName, comment;
+        public LocalDate date;
+    }
+
+    /** A report about a material (copyright, plagiarism, ...). Status: Open, Action Taken, Dismissed, Resolved. */
+    public static class ReportRow {
+        public int id, materialId;
+        public String title, reporterId, reporterName, reason, details, status, handledBy;
+        public LocalDate date;
+    }
+
+    public static class AuditRow {
+        public int id;
+        public long time;
+        public String actorId, actorName, action, details;
+    }
+
+    /** Failed sign-in counter for one ID. */
+    public static class AttemptRow {
+        public String id;
+        public int fails;
+        public long lockUntil;
+    }
+
+    public static class SuspendedRow {
+        public String userId, reason;
+        public LocalDate date;
+    }
+
+    /** The school record of one student (used to check sign-ups). */
+    public static class RosterRow {
+        public String id, name, program;
+    }
+
     /** An in-memory copy of all the tables. Change it only inside Db.write(...). */
     public static class Data {
         public final ArrayList<UserRow> users = new ArrayList<>();
@@ -57,6 +95,14 @@ public class Db {
         public final ArrayList<RequestRow> requests = new ArrayList<>();
         public final ArrayList<ActivityRow> activities = new ArrayList<>();
         public final ArrayList<AdminReqRow> adminReqs = new ArrayList<>();
+        public final ArrayList<ReviewRow> reviews = new ArrayList<>();
+        public final ArrayList<ReportRow> reports = new ArrayList<>();
+        public final ArrayList<AuditRow> audit = new ArrayList<>();
+        public final ArrayList<AttemptRow> attempts = new ArrayList<>();
+        public final ArrayList<SuspendedRow> suspended = new ArrayList<>();
+        public final ArrayList<RosterRow> roster = new ArrayList<>();
+        public final ArrayList<String> subjects = new ArrayList<>();
+        public final ArrayList<String> programs = new ArrayList<>();
         public long version;
         /** Set to true by code that modified something, so Db.write knows to save. */
         public boolean changed;
@@ -90,6 +136,56 @@ public class Db {
             int max = 0;
             for (AdminReqRow r : adminReqs) max = Math.max(max, r.id);
             return max + 1;
+        }
+
+        public int nextFileId() {
+            int max = 0;
+            for (Material m : materials) for (Material.FileInfo f : m.files) max = Math.max(max, f.id);
+            return max + 1;
+        }
+
+        public int nextReviewId() {
+            int max = 0;
+            for (ReviewRow r : reviews) max = Math.max(max, r.id);
+            return max + 1;
+        }
+
+        public int nextReportId() {
+            int max = 0;
+            for (ReportRow r : reports) max = Math.max(max, r.id);
+            return max + 1;
+        }
+
+        public AttemptRow attempt(String id) {
+            for (AttemptRow a : attempts) if (a.id.equals(id)) return a;
+            return null;
+        }
+
+        public SuspendedRow suspension(String userId) {
+            for (SuspendedRow s : suspended) if (s.userId.equals(userId)) return s;
+            return null;
+        }
+
+        public RosterRow rosterRow(String id) {
+            for (RosterRow r : roster) if (r.id.equals(id)) return r;
+            return null;
+        }
+
+        /** Writes one line into the audit log (who did what). */
+        public void audit(String actorId, String action, String details) {
+            int max = 0;
+            for (AuditRow a : audit) max = Math.max(max, a.id);
+            AuditRow a = new AuditRow();
+            a.id = max + 1;
+            a.time = System.currentTimeMillis();
+            a.actorId = actorId == null ? "" : actorId;
+            UserRow u = actorId == null ? null : user(actorId);
+            a.actorName = u != null ? u.name : (actorId == null || actorId.isEmpty() ? "System" : actorId);
+            a.action = action;
+            a.details = details == null ? "" : details;
+            audit.add(a);
+            while (audit.size() > 2000) audit.remove(0);
+            changed = true;
         }
 
         public ArrayList<String> adminIds() {
@@ -136,8 +232,49 @@ public class Db {
         FILES_DIR.mkdirs();
         write(d -> {
             if (d.users.isEmpty()) seed(d);
+            if (d.subjects.isEmpty() || d.programs.isEmpty()) migrate(d);
             return null;
         });
+    }
+
+    private static boolean containsIgnoreCase(ArrayList<String> list, String s) {
+        for (String x : list) if (x.equalsIgnoreCase(s)) return true;
+        return false;
+    }
+
+    /** Standard names for programs. "BSIT" and "bs information technology" both become "BS Information Technology". */
+    public static String normalizeProgram(ArrayList<String> programs, String course) {
+        if (course == null) return "";
+        String c = course.trim();
+        for (String p : programs) if (p.equalsIgnoreCase(c)) return p;
+        String key = c.toLowerCase().replaceAll("[^a-z]", "");
+        String[][] abbreviations = {{"bsit", "BS Information Technology"}, {"bscs", "BS Computer Science"},
+                {"bsis", "BS Information Systems"}, {"bscpe", "BS Computer Engineering"}, {"bsm", "BS Mathematics"},
+                {"bsmath", "BS Mathematics"}, {"bsp", "BS Physics"}, {"bse", "BS English"}, {"bsa", "BS Accountancy"},
+                {"bsba", "BS Business Administration"}, {"bsn", "BS Nursing"}, {"bspsy", "BS Psychology"}};
+        for (String[] a : abbreviations) if (a[0].equals(key)) return a[1];
+        return c;
+    }
+
+    /** First start of this version: fills the subject and program lists and standardizes the course names. */
+    private static void migrate(Data d) {
+        if (d.subjects.isEmpty()) {
+            for (String s : new String[]{"Computer Science", "Mathematics", "Physics", "English"}) d.subjects.add(s);
+        }
+        for (Material m : d.materials) if (!containsIgnoreCase(d.subjects, m.subject)) d.subjects.add(m.subject);
+        if (d.programs.isEmpty()) {
+            for (String p : new String[]{"BS Information Technology", "BS Computer Science", "BS Information Systems",
+                    "BS Computer Engineering", "BS Mathematics", "BS Physics", "BS English", "BS Accountancy",
+                    "BS Business Administration", "BS Nursing", "BS Psychology", "BS Civil Engineering",
+                    "BS Electrical Engineering", "BS Education", "BS Architecture", "BS Hospitality Management"})
+                d.programs.add(p);
+        }
+        for (UserRow u : d.users) {
+            if ("admin".equals(u.role)) continue;
+            u.course = normalizeProgram(d.programs, u.course);
+            if (!u.course.isEmpty() && !containsIgnoreCase(d.programs, u.course)) d.programs.add(u.course);
+        }
+        d.changed = true;
     }
 
     // ---------- Reading and writing ----------
@@ -307,6 +444,26 @@ public class Db {
             m.rejectReason = p[15];
             d.materials.add(m);
         }
+        for (String[] p : readRows("files.dat", 5)) {
+            Material m = d.material(Integer.parseInt(p[1]));
+            if (m == null) continue;
+            Material.FileInfo f = new Material.FileInfo();
+            f.id = Integer.parseInt(p[0]);
+            f.name = p[2];
+            f.size = p[3];
+            f.path = p[4];
+            m.files.add(f);
+        }
+        for (Material m : d.materials) {   // older data: one file stored inside the material row
+            if (m.files.isEmpty() && m.filePath != null && !m.filePath.isEmpty()) {
+                Material.FileInfo f = new Material.FileInfo();
+                f.id = d.nextFileId();
+                f.name = m.fileName;
+                f.size = m.fileSize;
+                f.path = m.filePath;
+                m.files.add(f);
+            }
+        }
         for (String[] p : readRows("requests.dat", 5)) {
             RequestRow r = new RequestRow();
             r.id = Integer.parseInt(p[0]);
@@ -335,6 +492,64 @@ public class Db {
             r.status = p[5];
             d.adminReqs.add(r);
         }
+        for (String[] p : readRows("reviews.dat", 7)) {
+            ReviewRow r = new ReviewRow();
+            r.id = Integer.parseInt(p[0]);
+            r.materialId = Integer.parseInt(p[1]);
+            r.userId = p[2];
+            r.userName = p[3];
+            r.stars = Integer.parseInt(p[4]);
+            r.comment = p[5];
+            r.date = LocalDate.parse(p[6]);
+            d.reviews.add(r);
+        }
+        for (String[] p : readRows("reports.dat", 10)) {
+            ReportRow r = new ReportRow();
+            r.id = Integer.parseInt(p[0]);
+            r.materialId = Integer.parseInt(p[1]);
+            r.title = p[2];
+            r.reporterId = p[3];
+            r.reporterName = p[4];
+            r.reason = p[5];
+            r.details = p[6];
+            r.date = LocalDate.parse(p[7]);
+            r.status = p[8];
+            r.handledBy = p[9];
+            d.reports.add(r);
+        }
+        for (String[] p : readRows("audit.dat", 6)) {
+            AuditRow a = new AuditRow();
+            a.id = Integer.parseInt(p[0]);
+            a.time = Long.parseLong(p[1]);
+            a.actorId = p[2];
+            a.actorName = p[3];
+            a.action = p[4];
+            a.details = p[5];
+            d.audit.add(a);
+        }
+        for (String[] p : readRows("attempts.dat", 3)) {
+            AttemptRow a = new AttemptRow();
+            a.id = p[0];
+            a.fails = Integer.parseInt(p[1]);
+            a.lockUntil = Long.parseLong(p[2]);
+            d.attempts.add(a);
+        }
+        for (String[] p : readRows("suspended.dat", 3)) {
+            SuspendedRow s = new SuspendedRow();
+            s.userId = p[0];
+            s.reason = p[1];
+            s.date = LocalDate.parse(p[2]);
+            d.suspended.add(s);
+        }
+        for (String[] p : readRows("roster.dat", 3)) {
+            RosterRow r = new RosterRow();
+            r.id = p[0];
+            r.name = p[1];
+            r.program = p[2];
+            d.roster.add(r);
+        }
+        for (String[] p : readRows("subjects.dat", 1)) d.subjects.add(p[0]);
+        for (String[] p : readRows("programs.dat", 1)) d.programs.add(p[0]);
         return d;
     }
 
@@ -344,12 +559,18 @@ public class Db {
         writeRows("students.dat", rows);
 
         rows = new ArrayList<>();
+        ArrayList<String[]> fileRows = new ArrayList<>();
         for (Material m : d.materials) {
+            Material.FileInfo first = m.files.isEmpty() ? null : m.files.get(0);
             rows.add(new String[]{String.valueOf(m.id), m.title, m.subject, m.type, m.uploaderId, m.date.toString(),
                     String.valueOf(m.rating), String.valueOf(m.ratingCount), m.description, String.join("\n", m.topics),
-                    m.fileName, m.fileSize, m.filePath, String.valueOf(m.requestCount), m.status, m.rejectReason});
+                    first != null ? first.name : m.fileName, first != null ? first.size : m.fileSize,
+                    first != null ? first.path : m.filePath, String.valueOf(m.requestCount), m.status, m.rejectReason});
+            for (Material.FileInfo f : m.files)
+                fileRows.add(new String[]{String.valueOf(f.id), String.valueOf(m.id), f.name, f.size, f.path});
         }
         writeRows("materials.dat", rows);
+        writeRows("files.dat", fileRows);
 
         rows = new ArrayList<>();
         for (RequestRow r : d.requests)
@@ -365,6 +586,42 @@ public class Db {
         for (AdminReqRow r : d.adminReqs)
             rows.add(new String[]{String.valueOf(r.id), r.adminId, r.name, r.email, r.date.toString(), r.status});
         writeRows("adminreqs.dat", rows);
+
+        rows = new ArrayList<>();
+        for (ReviewRow r : d.reviews)
+            rows.add(new String[]{String.valueOf(r.id), String.valueOf(r.materialId), r.userId, r.userName, String.valueOf(r.stars), r.comment, r.date.toString()});
+        writeRows("reviews.dat", rows);
+
+        rows = new ArrayList<>();
+        for (ReportRow r : d.reports)
+            rows.add(new String[]{String.valueOf(r.id), String.valueOf(r.materialId), r.title, r.reporterId, r.reporterName, r.reason,
+                    r.details, r.date.toString(), r.status, r.handledBy});
+        writeRows("reports.dat", rows);
+
+        rows = new ArrayList<>();
+        for (AuditRow a : d.audit)
+            rows.add(new String[]{String.valueOf(a.id), String.valueOf(a.time), a.actorId, a.actorName, a.action, a.details});
+        writeRows("audit.dat", rows);
+
+        rows = new ArrayList<>();
+        for (AttemptRow a : d.attempts) rows.add(new String[]{a.id, String.valueOf(a.fails), String.valueOf(a.lockUntil)});
+        writeRows("attempts.dat", rows);
+
+        rows = new ArrayList<>();
+        for (SuspendedRow s : d.suspended) rows.add(new String[]{s.userId, s.reason, s.date.toString()});
+        writeRows("suspended.dat", rows);
+
+        rows = new ArrayList<>();
+        for (RosterRow r : d.roster) rows.add(new String[]{r.id, r.name, r.program});
+        writeRows("roster.dat", rows);
+
+        rows = new ArrayList<>();
+        for (String s : d.subjects) rows.add(new String[]{s});
+        writeRows("subjects.dat", rows);
+
+        rows = new ArrayList<>();
+        for (String p : d.programs) rows.add(new String[]{p});
+        writeRows("programs.dat", rows);
 
         // The version file is written LAST, so other windows never see a half-saved state.
         d.version++;
